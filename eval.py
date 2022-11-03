@@ -1,6 +1,7 @@
 import pickle
 import fire
 import torch
+import torch.utils.data
 from copy import deepcopy
 import numpy as np
 from aputils import Video, camera_config
@@ -15,33 +16,6 @@ from predict import predict
 print('CUDA available: {}'.format(torch.cuda.is_available()))
 
 VIDEO_DIR = "./data/boston-seaport/"
-
-
-def main(
-    config:str="config/config.py",
-    gpu:int=0, 
-    checkpoint_path:str="retinanet_79.pth",
-):
-    # Read Config
-    cfg = cfg_from_file(config)
-    
-    # Force GPU selection in command line
-    cfg.trainer.gpu = gpu
-    torch.cuda.set_device(cfg.trainer.gpu)
-
-    cfg.is_running_test_set = True
-    # Create the model
-    detector = DETECTOR_DICT[cfg.detector.name](cfg.detector)
-    detector = detector.cuda()
-
-    state_dict = torch.load(checkpoint_path, map_location='cuda:{}'.format(cfg.trainer.gpu))
-    new_dict = state_dict.copy()
-    detector.load_state_dict(new_dict, strict=False)
-    detector.eval()
-
-    # Run evaluation
-    predict(cfg, detector, NuScenesMonoDataset(cfg, VIDEO_DIR), None, 0)
-    print('finish')
 
 
 class NuScenesMonoDataset(torch.utils.data.Dataset):
@@ -100,6 +74,33 @@ class NuScenesMonoDataset(torch.utils.data.Dataset):
 
         calib = [item["calib"] for item in batch]
         return torch.from_numpy(rgb_images).float(), calib 
+
+
+def main(
+    config:str="config/config.py",
+    gpu:int=0, 
+    checkpoint_path:str="retinanet_79.pth",
+):
+    # Read Config
+    cfg = cfg_from_file(config)
+    
+    # Force GPU selection in command line
+    cfg.trainer.gpu = gpu
+    torch.cuda.set_device(cfg.trainer.gpu)
+
+    cfg.is_running_test_set = True
+    # Create the model
+    detector = DETECTOR_DICT[cfg.detector.name](cfg.detector)
+    detector = detector.cuda()
+
+    state_dict = torch.load(checkpoint_path, map_location='cuda:{}'.format(cfg.trainer.gpu))
+    new_dict = state_dict.copy()
+    detector.load_state_dict(new_dict, strict=False)
+    detector.eval()
+
+    # Run evaluation
+    predict(cfg, detector, NuScenesMonoDataset(cfg, VIDEO_DIR), None, 0)
+    print('finish')
 
 
 if __name__ == '__main__':
