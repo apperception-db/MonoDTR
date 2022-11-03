@@ -22,8 +22,8 @@ cfg.trainer = trainer
 
 ## path
 path = edict()
-path.data_path = "/tmp4/kuanchih/dataset/KITTI/detection/training" # used in visualDet3D/data/.../dataset
-path.test_path = "/tmp4/kuanchih/dataset/KITTI/detection/testing" # used in visualDet3D/data/.../dataset
+path.data_path = "./training" # used in visualDet3D/data/.../dataset
+path.test_path = "./testing" # used in visualDet3D/data/.../dataset
 path.visualDet3D_path = "./visualDet3D" # The path should point to the inner subfolder
 path.project_path = "./workdirs" # or other path for pickle files, checkpoints, tensorboard logging and output files.
 if not os.path.isdir(path.project_path):
