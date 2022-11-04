@@ -141,12 +141,12 @@ class Video(collections.abc.Iterable):
     videofile: str
 
     def __init__(
-        self, videofile: str, camera_configs: "List[CameraConfig]", start: datetime = None
+        self, videofile: str, camera_configs: "List[CameraConfig]", start: "datetime | None" = None
     ):
         self.videofile = videofile
         self._camera_configs: "List[CameraConfig]" = camera_configs
-        self._start: "Optional[datetime]" = start
-        self._interpolated_frames: "Optional[List[CameraConfig]]" = None
+        self._start: "datetime | None" = start
+        self._interpolated_frames: "List[CameraConfig] | None" = None
         self._num_frames: "int | None" = None
         self._fps: "float | None" = None
 
