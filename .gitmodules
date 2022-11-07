@@ -1,3 +1,4 @@
 [submodule "submodules/Yolov5_StrongSORT_OSNet"]
 	path = submodules/Yolov5_StrongSORT_OSNet
-	url = git@github.com:mikel-brostrom/Yolov5_StrongSORT_OSNet.git
+	url = git@github.com:apperception-db/Yolov5_StrongSORT_OSNet.git
+	branch = model
