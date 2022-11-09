@@ -4,3 +4,6 @@ __pycache__
 data
 data_object_image_2.zip
 data_object_calib.zip
+data_object_label_2.zip
+data_object_velodyne.zip
+.ipynb_checkpoints

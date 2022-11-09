@@ -5,23 +5,19 @@ from dataclasses import dataclass
 from typing import Any, List
 import sys
 from pathlib import Path
-import platform
 
 import cv2
 import fire
 import numpy as np
 import numpy.typing as npt
 import torch
-import torch.nn as nn
 import torch.utils.data
-from easydict import EasyDict
 from tqdm import tqdm
 
 from aputils import Video, camera_config
 from scripts._path_init import *
 from visualDet3D.data.pipeline import build_augmentator
 from visualDet3D.networks.detectors.monodtr_detector import MonoDTR
-from visualDet3D.networks.pipelines.testers import test_mono_detection
 from visualDet3D.networks.utils.utils import BackProjection, BBox3dProjector
 from visualDet3D.utils.utils import cfg_from_file
 
@@ -34,53 +30,23 @@ YOLOV5_STRONGSORT_OSNET_ROOT = SUBMODULE / "Yolov5_StrongSORT_OSNet"
 
 if str(YOLOV5_STRONGSORT_OSNET_ROOT) not in sys.path:
     sys.path.append(str(YOLOV5_STRONGSORT_OSNET_ROOT))
-if str(YOLOV5_STRONGSORT_OSNET_ROOT / "strong_sort") not in sys.path:
-    sys.path.append(str(YOLOV5_STRONGSORT_OSNET_ROOT / "strong_sort"))
-if str(YOLOV5_STRONGSORT_OSNET_ROOT / "strong_sort/deep/reid") not in sys.path:
-    sys.path.append(str(YOLOV5_STRONGSORT_OSNET_ROOT / "strong_sort/deep/reid"))
+if str(YOLOV5_STRONGSORT_OSNET_ROOT / "trackers") not in sys.path:
+    sys.path.append(str(YOLOV5_STRONGSORT_OSNET_ROOT / "trackers"))
+if str(YOLOV5_STRONGSORT_OSNET_ROOT / "trackers/strong_sort") not in sys.path:
+    sys.path.append(str(YOLOV5_STRONGSORT_OSNET_ROOT / "trackers/strong_sort"))
+if str(YOLOV5_STRONGSORT_OSNET_ROOT / "trackers/strong_sort/deep/reid") not in sys.path:
+    sys.path.append(str(YOLOV5_STRONGSORT_OSNET_ROOT / "trackers/strong_sort/deep/reid"))
 
-from submodules.Yolov5_StrongSORT_OSNet.strong_sort.strong_sort import StrongSORT
-from submodules.Yolov5_StrongSORT_OSNet.strong_sort.utils.parser import get_config
+from submodules.Yolov5_StrongSORT_OSNet.trackers.multi_tracker_zoo import create_tracker
+from submodules.Yolov5_StrongSORT_OSNet.yolov5.utils.general import scale_boxes
+from submodules.Yolov5_StrongSORT_OSNet.yolov5.utils.plots import Annotator, colors
+from submodules.Yolov5_StrongSORT_OSNet.trackers.strong_sort.strong_sort import StrongSORT
 
 print('CUDA available: {}'.format(torch.cuda.is_available()))
 
 VIDEO_DIR = "./data/boston-seaport/"
 
-
-def select_device(device='', batch_size=0, newline=True):
-    # device = None or 'cpu' or 0 or '0' or '0,1,2,3'
-    s = f'YOLOv5 🚀 Python-{platform.python_version()} torch-{torch.__version__} '
-    device = str(device).strip().lower().replace('cuda:', '').replace('none', '')  # to string, 'cuda:0' to '0'
-    cpu = device == 'cpu'
-    mps = device == 'mps'  # Apple Metal Performance Shaders (MPS)
-    if cpu or mps:
-        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # force torch.cuda.is_available() = False
-    elif device:  # non-cpu device requested
-        os.environ['CUDA_VISIBLE_DEVICES'] = device  # set environment variable - must be before assert is_available()
-        assert torch.cuda.is_available() and torch.cuda.device_count() >= len(device.replace(',', '')), \
-            f"Invalid CUDA '--device {device}' requested, use '--device cpu' or pass valid CUDA device(s)"
-
-    if not cpu and not mps and torch.cuda.is_available():  # prefer GPU if available
-        devices = device.split(',') if device else '0'  # range(torch.cuda.device_count())  # i.e. 0,1,6,7
-        n = len(devices)  # device count
-        if n > 1 and batch_size > 0:  # check batch_size is divisible by device_count
-            assert batch_size % n == 0, f'batch-size {batch_size} not multiple of GPU count {n}'
-        space = ' ' * (len(s) + 1)
-        for i, d in enumerate(devices):
-            p = torch.cuda.get_device_properties(i)
-            s += f"{'' if i == 0 else space}CUDA:{d} ({p.name}, {p.total_memory / (1 << 20):.0f}MiB)\n"  # bytes to MB
-        arg = 'cuda:0'
-    elif mps and getattr(torch, 'has_mps', False) and torch.backends.mps.is_available():  # prefer MPS if available
-        s += 'MPS\n'
-        arg = 'mps'
-    else:  # revert to CPU
-        s += 'CPU\n'
-        arg = 'cpu'
-
-    if not newline:
-        s = s.rstrip()
-    print(s)
-    return torch.device(arg)
+names = ['Car', 'Pedestrian', 'Cyclist']
 
 
 class NuScenesMonoDataset(torch.utils.data.Dataset):
@@ -102,30 +68,51 @@ class NuScenesMonoDataset(torch.utils.data.Dataset):
         start = video['start']
         self.videofile = os.path.join(video_dir, videofile)
         self.video = Video(self.videofile, frames, start)
-        self.images = []
-        cap = cv2.VideoCapture(os.path.join(video_dir, videofile))
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            self.images.append(frame)
-        assert len(self.images) == len(self.video), (len(self.images), len(self.video))
-        cap.release()
-        cv2.destroyAllWindows()
+        self._images = []
+        self.cap = cv2.VideoCapture(os.path.join(video_dir, videofile))
+        self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
     def __len__(self):
         return len(self.video)
+    
+    def get_image(self, index: "int"):
+        if index >= self.frame_count:
+            raise IndexError()
 
-    def __getitem__(self, index):
+        while index >= len(self._images):
+            ret, frame = self.cap.read()
+            if not ret:
+                raise Exception()
+            self._images.append(frame)
+        
+        if len(self._images) == self.frame_count and self.cap.isOpened():
+            assert len(self._images) == len(self.video), (len(self._images), len(self.video))
+            ret, frame = self.cap.read()
+            assert not ret
+            self.cap.release()
+            cv2.destroyAllWindows()
+        
+        return self._images[index]
+
+    def __getitem__(self, index: "int"):
+        if index >= self.frame_count:
+            raise IndexError()
+
         frame = self.video[index]
-        image = self.images[index][:, :, ::-1].copy()
-        p2 = np.concatenate([frame.camera_intrinsic, np.array([[0, 0, 0]]).T], axis=1)
+        image = torch.tensor(self.get_image(index)[:, :, ::-1].copy())
+        p2 = torch.tensor(np.concatenate([
+            np.array(frame.camera_intrinsic),
+            np.array([[0, 0, 0]]).T
+        ], axis=1))
         transformed_image, transformed_P2 = self.transform(image, p2=deepcopy(p2))
 
-        output_dict = {'calib': transformed_P2,
-                       'image': transformed_image,
-                       'original_shape':image.shape,
-                       'original_P':p2.copy()}
+        output_dict = {
+            'calib': transformed_P2,
+            'image': transformed_image,
+            'original_shape':image.shape,
+            'original_P':p2.copy(),
+            'original_image': image,
+        }
         return output_dict
 
     @staticmethod
@@ -143,7 +130,7 @@ class NuScenesMonoDataset(torch.utils.data.Dataset):
 @dataclass
 class Detection:
     bbox_2d: "List[Any]"
-    obj_types: "List[str]"
+    clss: "List[int]"
     bbox_3d_state_3d: "List[Any]"
     thetas: "List[Any] | npt.NDArray[np.floating[Any]]"
     scores: "List[Any]"
@@ -183,7 +170,7 @@ def format_detections(
                 continue
         return Detection(
             bbox_2d=bbox_2d,
-            obj_types=obj_types,
+            clss=obj_types,
             bbox_3d_state_3d=bbox_3d_state_3d,
             thetas=thetas,
             scores=scores,
@@ -197,7 +184,7 @@ def main(
     checkpoint_path: str = "./workdirs/MonoDTR/checkpoint/MonoDTR.pth",
 ):
     # Read Config
-    cfg = cfg_from_file(config)
+    cfg: "Any" = cfg_from_file(config)
     
     # Force GPU selection in command line
     cfg.trainer.gpu = gpu
@@ -206,25 +193,12 @@ def main(
     cfg.is_running_test_set = True
 
     # Create StrongSORT model
-    config_strongsort = './submodules/Yolov5_StrongSORT_OSNet/strong_sort/configs/strong_sort.yaml'
-    strong_sort_weights = "./weights/osnet_x0_25_msmt17.pt"  # model.pt path
-    device = select_device("")
+    reid_weights = FILE.parent / "weights/osnet_x0_25_msmt17.pt"  # model.pt path
+    device = torch.device(int(gpu))
     half = False
-    scfg = get_config()
-    scfg.merge_from_file(config_strongsort)
-    strongsort = StrongSORT(
-        strong_sort_weights,
-        device,
-        half,
-        max_dist=scfg.STRONGSORT.MAX_DIST,
-        max_iou_distance=scfg.STRONGSORT.MAX_IOU_DISTANCE,
-        max_age=scfg.STRONGSORT.MAX_AGE,
-        n_init=scfg.STRONGSORT.N_INIT,
-        nn_budget=scfg.STRONGSORT.NN_BUDGET,
-        mc_lambda=scfg.STRONGSORT.MC_LAMBDA,
-        ema_alpha=scfg.STRONGSORT.EMA_ALPHA,
-    )
-    strongsort.model.warmup()
+    tracker = create_tracker("strongsort", reid_weights, device, half)
+    tracker.model.warmup()
+    print('loaded tracker')
     
     # Create detection the model
     detector = MonoDTR(cfg.detector)
@@ -233,10 +207,13 @@ def main(
     new_dict = state_dict.copy()
     detector.load_state_dict(new_dict, strict=False)
     detector.eval()
+    print('loaded detector')
 
+    video_writer = None
 
     # Run evaluation
     dataset = NuScenesMonoDataset(cfg, VIDEO_DIR)
+    print('constructed dataset')
     with torch.no_grad():
         detector.eval()
         result_path = os.path.join(cfg.path.preprocessed_path, 'data')
@@ -249,8 +226,13 @@ def main(
         projector = BBox3dProjector().cuda()
         backprojector = BackProjection().cuda()
 
+        trackings = {}
+        output = None
+        dt, seen = [0.0, 0.0, 0.0, 0.0], 0
+        curr_frame, prev_frame = None, None
         detections: "List[Detection]" = []
         for index in tqdm(range(len(dataset))):
+            print(index)
             data = dataset[index]
             if isinstance(data['calib'], list):
                 P2 = data['calib'][0]
@@ -259,13 +241,24 @@ def main(
             collated_data = dataset.collate_fn([data])
                 
 
-            scores, bbox, obj_names = test_mono_detection(collated_data, model, None, cfg=cfg)
-            assert scores.shape[0] == bbox.shape[0] and scores.shape[0] == len(obj_names)
+            # images: torch.Tensor [N=1 x 3 x h x w]
+            # P2: [np.array[3 x 4]]
+            images, P2 = collated_data
+            scores, bbox, clss = detector([
+                images.cuda().float().contiguous(),
+                torch.tensor(P2).cuda().float()
+            ])
+            print(scores)
+            print(bbox)
+            print(clss)
+            # scores, bbox, obj_names = test_mono_detection(collated_data, detector, None, cfg=cfg)
+            assert scores.shape[0] == bbox.shape[0] and scores.shape[0] == clss.shape[0]
             bbox_2d = bbox[:, 0:4]
 
             if bbox.shape[1] <= 4:
                 raise Exception('Should run 3D')
             bbox_3d_state = bbox[:, 4:]  # [cx,cy,z,w,h,l,alpha, bot, top]
+            P2 = P2[0]
             bbox_3d_state_3d = backprojector(bbox_3d_state, P2)  # [x, y, z, w,h ,l, alpha, bot, top]
 
             _, _, thetas = projector(bbox_3d_state_3d, bbox_3d_state_3d.new(P2))
@@ -282,14 +275,52 @@ def main(
             bbox_2d[:, 0:4:2] *= scale_x
             bbox_2d[:, 1:4:2] *= scale_y
 
-            detection = format_detections(scores, bbox_2d, bbox_3d_state_3d, thetas, obj_names)
+            detection = format_detections(scores, bbox_2d, bbox_3d_state_3d, thetas, clss)
             detections.append(detection)
 
-        trackings = {}
-        for detection in detections:
-            bbox_2d = detection.bbox_2d
-        print(sum(map(lambda x: x[1], detections)))
+            im = collated_data[0]
+            curr_frame = im
+            im0 = data['original_image'].copy()
+            print(im0.shape)
+            annotator = Annotator(im0, line_width=2, pil=not ascii)
+            if prev_frame is not None and curr_frame is not None:
+                if hasattr(tracker, 'tracker') and hasattr(tracker.tracker, 'camera_update'):
+                    tracker.tracker.camera_update(prev_frame, curr_frame)
+            det = bbox_2d
+            if det is not None and len(det):
+                # Rescale boxes from img_size to im0 size
+                det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()  # xyxy
 
+                outputs = tracker.update(det.cpu(), im0)
+                if len(outputs) > 0:
+                    for j, (output, conf) in enumerate(zip(outputs, det[:, 4])):
+                        bboxes = output[0:4]
+                        id = int(output[4])
+                        cls = int(output[5])
+                        index = int(output[7])
+                        bbox_3d = bbox_3d_state_3d[index]
+
+                        bbox_left = output[0]
+                        bbox_top = output[1]
+                        bbox_w = output[2] - output[0]
+                        bbox_h = output[3] - output[1]
+                        label = f'{id} {names[cls]} {conf:.2f}'
+                        annotator.box_label(bboxes, label, colod=colors(cls, True))
+            
+            im0 = annotator.result()
+
+            if video_writer is None:
+                fps = 20
+                h = im0.shape[0]
+                w = im0.shape[1]
+                video_writer = cv2.VideoWriter('./test.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+            video_writer.write(im0)
+            
+            prev_frame = curr_frame
+        
+    video_writer.release()
+    cv2.destroyAllWindows()
+                
 
 if __name__ == '__main__':
     fire.Fire(main)

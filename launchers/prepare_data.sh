@@ -10,6 +10,6 @@ unzip data_object_calib.zip
 wget "https://s3.eu-central-1.amazonaws.com/avg-kitti/data_object_label_2.zip"
 unzip data_object_label_2.zip
 
-./launcher/det_precompute.sh/config/config.py train
-./launcher/det_precompute.sh/config/config.py test
+./launchers/det_precompute.sh ./config/config.py train
+./launchers/det_precompute.sh ./config/config.py test
 
