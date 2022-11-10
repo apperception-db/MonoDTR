@@ -66,6 +66,7 @@ class NuScenesMonoDataset(torch.utils.data.Dataset):
     def __getitem__(self, index: "int"):
         image = self._images[index]
         p2 = self._P2s[index]
+        frame = self.video[index]
 
         t_image, t_p2 = self.transform(image, p2=deepcopy(p2))
         output_dict = {
@@ -74,6 +75,10 @@ class NuScenesMonoDataset(torch.utils.data.Dataset):
             'original_shape':image.shape,
             'original_P':p2.copy(),
             'original_image': image,
+            'timestamp': frame.timestamp,
+            'camera_rotation': frame.camera_rotation,
+            'camera_translation': frame.camera_translation,
+            'camera_intrinsic': frame.camera_intrinsic,
         }
         return output_dict
 
