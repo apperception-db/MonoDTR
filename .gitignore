@@ -7,3 +7,5 @@ data_object_calib.zip
 data_object_label_2.zip
 data_object_velodyne.zip
 .ipynb_checkpoints
+
+*.so
